@@ -796,6 +796,7 @@ class Sub2ApiUploadRequest(BaseModel):
     service_id: Optional[int] = None
     concurrency: int = 3
     priority: int = 50
+    proxy_id: Optional[int] = None  # 远端 Sub2API 代理 ID
 
 
 class BatchSub2ApiUploadRequest(BaseModel):
@@ -808,6 +809,7 @@ class BatchSub2ApiUploadRequest(BaseModel):
     service_id: Optional[int] = None  # 指定 Sub2API 服务 ID，不传则使用第一个启用的
     concurrency: int = 3
     priority: int = 50
+    proxy_id: Optional[int] = None  # 远端 Sub2API 代理 ID
 
 
 @router.post("/batch-upload-sub2api")
@@ -844,6 +846,7 @@ async def batch_upload_accounts_to_sub2api(request: BatchSub2ApiUploadRequest):
         ids, api_url, api_key,
         concurrency=request.concurrency,
         priority=request.priority,
+        proxy_id=request.proxy_id,
     )
     return results
 
@@ -855,6 +858,7 @@ async def upload_account_to_sub2api(account_id: int, request: Optional[Sub2ApiUp
     service_id = request.service_id if request else None
     concurrency = request.concurrency if request else 3
     priority = request.priority if request else 50
+    proxy_id = request.proxy_id if request else None
 
     api_url = None
     api_key = None
@@ -884,7 +888,7 @@ async def upload_account_to_sub2api(account_id: int, request: Optional[Sub2ApiUp
 
         success, message = upload_to_sub2api(
             [account], api_url, api_key,
-            concurrency=concurrency, priority=priority
+            concurrency=concurrency, priority=priority, proxy_id=proxy_id
         )
         if success:
             return {"success": True, "message": message}

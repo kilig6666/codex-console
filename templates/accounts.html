@@ -277,6 +277,26 @@
         </div>
     </div>
 
+    <!-- Sub2API 代理选择模态框 -->
+    <div class="modal" id="sub2api-proxy-modal">
+        <div class="modal-content" style="max-width: 520px;">
+            <div class="modal-header">
+                <h3>🌐 选择远端代理</h3>
+                <button class="modal-close" id="close-sub2api-proxy-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="color: var(--text-muted); margin-bottom: 12px; font-size: 0.9rem;">选择目标 Sub2API 服务中已存在的远端代理，或选择不使用代理。</p>
+                <div id="sub2api-proxy-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto;">
+                    <div style="text-align: center; color: var(--text-muted);">加载中...</div>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-secondary" id="sub2api-no-proxy-btn">不使用代理</button>
+                <button class="btn btn-secondary" id="cancel-sub2api-proxy-modal-btn">取消</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/js/utils.js?v={{ static_version }}"></script>
     <script src="/static/js/accounts.js?v={{ static_version }}"></script>
 </body>

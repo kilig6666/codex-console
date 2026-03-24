@@ -1022,6 +1022,83 @@ function selectSub2ApiService() {
     });
 }
 
+function selectSub2ApiProxy(serviceChoice) {
+    return new Promise(async (resolve) => {
+        const modal = document.getElementById('sub2api-proxy-modal');
+        const listEl = document.getElementById('sub2api-proxy-list');
+        const closeBtn = document.getElementById('close-sub2api-proxy-modal');
+        const cancelBtn = document.getElementById('cancel-sub2api-proxy-modal-btn');
+        const noProxyBtn = document.getElementById('sub2api-no-proxy-btn');
+
+        listEl.innerHTML = '<div style="text-align:center;color:var(--text-muted)">加载中...</div>';
+        modal.classList.add('active');
+
+        let proxies = [];
+        try {
+            const query = serviceChoice && serviceChoice.service_id != null
+                ? `?service_id=${encodeURIComponent(serviceChoice.service_id)}`
+                : '';
+            const result = await api.get(`/sub2api-services/remote-proxies${query}`);
+            proxies = result.proxies || [];
+        } catch (e) {
+            cleanup();
+            toast.error('加载远端 Sub2API 代理失败: ' + e.message);
+            resolve(null);
+            return;
+        }
+
+        if (proxies.length === 0) {
+            listEl.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:12px;">该 Sub2API 服务下暂无可选远端代理，可选择不使用代理继续上传</div>';
+        } else {
+            listEl.innerHTML = proxies.map(proxy => `
+                <div class="sub2api-service-item" data-id="${proxy.id}" style="
+                    padding: 10px 14px;
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    cursor: pointer;
+                    transition: background 0.15s;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    gap: 12px;
+                ">
+                    <div>
+                        <div style="font-weight:500;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <span>#${proxy.id} ${escapeHtml(proxy.name)}</span>
+                            <span class="badge">${escapeHtml(String(proxy.protocol || '').toUpperCase())}</span>
+                            <span class="status-badge ${proxy.status === 'active' ? 'active' : ''}">${escapeHtml(proxy.status || 'inactive')}</span>
+                        </div>
+                        <div style="font-size:0.8rem;color:var(--text-muted);">${escapeHtml(proxy.host)}:${proxy.port}</div>
+                    </div>
+                    <span class="badge" style="background:var(--primary);color:#fff;font-size:0.7rem;padding:2px 8px;border-radius:10px;">选择</span>
+                </div>
+            `).join('');
+
+            listEl.querySelectorAll('.sub2api-service-item').forEach(item => {
+                item.addEventListener('mouseenter', () => item.style.background = 'var(--surface-hover)');
+                item.addEventListener('mouseleave', () => item.style.background = '');
+                item.addEventListener('click', () => {
+                    cleanup();
+                    resolve({ proxy_id: parseInt(item.dataset.id) });
+                });
+            });
+        }
+
+        function cleanup() {
+            modal.classList.remove('active');
+            closeBtn.removeEventListener('click', onCancel);
+            cancelBtn.removeEventListener('click', onCancel);
+            noProxyBtn.removeEventListener('click', onNoProxy);
+        }
+        function onCancel() { cleanup(); resolve(null); }
+        function onNoProxy() { cleanup(); resolve({ proxy_id: null }); }
+
+        closeBtn.addEventListener('click', onCancel);
+        cancelBtn.addEventListener('click', onCancel);
+        noProxyBtn.addEventListener('click', onNoProxy);
+    });
+}
+
 // 批量上传到 Sub2API
 async function handleBatchUploadSub2Api() {
     const count = getEffectiveCount();
@@ -1029,6 +1106,9 @@ async function handleBatchUploadSub2Api() {
 
     const choice = await selectSub2ApiService();
     if (choice === null) return;  // 用户取消
+
+    const proxyInput = await selectSub2ApiProxy(choice);
+    if (proxyInput === null) return;
 
     const confirmed = await confirm(`确定要将选中的 ${count} 个账号上传到 Sub2API 吗？`);
     if (!confirmed) return;
@@ -1039,6 +1119,7 @@ async function handleBatchUploadSub2Api() {
     try {
         const payload = buildBatchPayload();
         if (choice.service_id != null) payload.service_id = choice.service_id;
+        if (proxyInput.proxy_id != null) payload.proxy_id = proxyInput.proxy_id;
         const result = await api.post('/accounts/batch-upload-sub2api', payload);
 
         let message = `成功: ${result.success_count}`;
@@ -1060,10 +1141,15 @@ async function handleBatchUploadSub2Api() {
 async function uploadToSub2Api(id) {
     const choice = await selectSub2ApiService();
     if (choice === null) return;
+
+    const proxyInput = await selectSub2ApiProxy(choice);
+    if (proxyInput === null) return;
+
     try {
         toast.info('正在上传到 Sub2API...');
         const payload = {};
         if (choice.service_id != null) payload.service_id = choice.service_id;
+        if (proxyInput.proxy_id != null) payload.proxy_id = proxyInput.proxy_id;
         const result = await api.post(`/accounts/${id}/upload-sub2api`, payload);
         if (result.success) {
             toast.success('上传成功');

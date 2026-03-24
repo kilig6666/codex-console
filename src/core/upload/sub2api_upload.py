@@ -3,17 +3,156 @@ Sub2API 账号上传功能
 将账号以 sub2api-data 格式批量导入到 Sub2API 平台
 """
 
-import json
 import logging
 from datetime import datetime, timezone
-from typing import List, Tuple, Optional
+from typing import Any, List, Optional, Tuple
 
 from curl_cffi import requests as cffi_requests
 
-from ...database.session import get_db
 from ...database.models import Account
+from ...database.session import get_db
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_sub2api_data(response) -> Any:
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+
+    if response.status_code >= 400:
+        if isinstance(payload, dict) and payload.get("message"):
+            raise ValueError(str(payload["message"]))
+        response_text = (response.text or "").strip()
+        raise ValueError(
+            f"HTTP {response.status_code}" + (f" - {response_text[:200]}" if response_text else "")
+        )
+
+    if isinstance(payload, dict):
+        if payload.get("code") not in (None, 0):
+            raise ValueError(str(payload.get("message") or "Sub2API 返回错误"))
+        return payload.get("data", payload)
+
+    if payload is None:
+        raise ValueError("Sub2API 返回了无法解析的响应")
+
+    return payload
+
+
+def _normalize_remote_sub2api_proxy(proxy: dict) -> dict:
+    protocol = str(proxy.get("protocol") or "").strip()
+    host = str(proxy.get("host") or "").strip()
+    try:
+        port = int(proxy.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+
+    normalized = {
+        "id": proxy.get("id"),
+        "name": str(proxy.get("name") or "").strip(),
+        "protocol": protocol,
+        "host": host,
+        "port": port,
+        "username": str(proxy.get("username") or "").strip(),
+        "password": str(proxy.get("password") or "").strip(),
+        "status": str(proxy.get("status") or "inactive").strip() or "inactive",
+    }
+    if not normalized["name"]:
+        if normalized["id"] is not None:
+            normalized["name"] = f"Proxy {normalized['id']}"
+        else:
+            normalized["name"] = f"{protocol}://{host}:{port}"
+    return normalized
+
+
+def _build_sub2api_proxy_key(proxy: dict) -> str:
+    normalized = _normalize_remote_sub2api_proxy(proxy)
+    return (
+        f"{normalized['protocol']}|{normalized['host']}|{normalized['port']}|"
+        f"{normalized['username']}|{normalized['password']}"
+    )
+
+
+def _build_sub2api_proxy_payload(proxy: dict) -> dict:
+    normalized = _normalize_remote_sub2api_proxy(proxy)
+    if not normalized["protocol"] or not normalized["host"] or normalized["port"] <= 0:
+        raise ValueError(f"远端 Sub2API 代理 {normalized['id']} 配置不完整，无法生成上传数据")
+
+    return {
+        "proxy_key": _build_sub2api_proxy_key(normalized),
+        "name": normalized["name"],
+        "protocol": normalized["protocol"],
+        "host": normalized["host"],
+        "port": normalized["port"],
+        "username": normalized["username"],
+        "password": normalized["password"],
+        "status": normalized["status"],
+    }
+
+
+def fetch_remote_sub2api_proxies(api_url: str, api_key: str) -> List[dict]:
+    if not api_url:
+        raise ValueError("Sub2API URL 未配置")
+    if not api_key:
+        raise ValueError("Sub2API API Key 未配置")
+
+    url = api_url.rstrip("/") + "/api/v1/admin/proxies/all"
+
+    try:
+        response = cffi_requests.get(
+            url,
+            headers={"x-api-key": api_key},
+            proxies=None,
+            timeout=15,
+            impersonate="chrome110",
+        )
+        data = _extract_sub2api_data(response)
+        if not isinstance(data, list):
+            raise ValueError("远端 Sub2API 代理列表格式异常")
+        return [_normalize_remote_sub2api_proxy(item) for item in data if isinstance(item, dict)]
+    except ValueError:
+        raise
+    except cffi_requests.exceptions.ConnectionError as e:
+        raise ValueError(f"无法连接到远端 Sub2API 服务: {e}") from e
+    except cffi_requests.exceptions.Timeout as e:
+        raise ValueError("拉取远端 Sub2API 代理列表超时") from e
+    except Exception as e:
+        logger.error(f"拉取远端 Sub2API 代理列表异常: {e}")
+        raise ValueError(f"拉取远端 Sub2API 代理列表失败: {e}") from e
+
+
+def fetch_remote_sub2api_proxy(api_url: str, api_key: str, proxy_id: int) -> dict:
+    if proxy_id is None:
+        raise ValueError("远端 Sub2API 代理 ID 不能为空")
+    if not api_url:
+        raise ValueError("Sub2API URL 未配置")
+    if not api_key:
+        raise ValueError("Sub2API API Key 未配置")
+
+    url = api_url.rstrip("/") + f"/api/v1/admin/proxies/{proxy_id}"
+
+    try:
+        response = cffi_requests.get(
+            url,
+            headers={"x-api-key": api_key},
+            proxies=None,
+            timeout=15,
+            impersonate="chrome110",
+        )
+        data = _extract_sub2api_data(response)
+        if not isinstance(data, dict):
+            raise ValueError("远端 Sub2API 代理详情格式异常")
+        return _normalize_remote_sub2api_proxy(data)
+    except ValueError:
+        raise
+    except cffi_requests.exceptions.ConnectionError as e:
+        raise ValueError(f"无法连接到远端 Sub2API 服务: {e}") from e
+    except cffi_requests.exceptions.Timeout as e:
+        raise ValueError("拉取远端 Sub2API 代理详情超时") from e
+    except Exception as e:
+        logger.error(f"拉取远端 Sub2API 代理详情异常: {e}")
+        raise ValueError(f"拉取远端 Sub2API 代理详情失败: {e}") from e
 
 
 def upload_to_sub2api(
@@ -22,6 +161,7 @@ def upload_to_sub2api(
     api_key: str,
     concurrency: int = 3,
     priority: int = 50,
+    proxy_id: Optional[int] = None,
 ) -> Tuple[bool, str]:
     """
     上传账号列表到 Sub2API 平台（不走代理）
@@ -32,6 +172,7 @@ def upload_to_sub2api(
         api_key: Admin API Key（x-api-key header）
         concurrency: 账号并发数，默认 3
         priority: 账号优先级，默认 50
+        proxy_id: 远端 Sub2API 代理 ID，用于生成 Sub2API 识别的 proxy_key（可选）
 
     Returns:
         (成功标志, 消息)
@@ -47,12 +188,20 @@ def upload_to_sub2api(
 
     exported_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    proxy_payload = None
+    if proxy_id is not None:
+        try:
+            remote_proxy = fetch_remote_sub2api_proxy(api_url, api_key, proxy_id)
+            proxy_payload = _build_sub2api_proxy_payload(remote_proxy)
+        except ValueError as e:
+            return False, str(e)
+
     account_items = []
     for acc in accounts:
         if not acc.access_token:
             continue
         expires_at = int(acc.expires_at.timestamp()) if acc.expires_at else 0
-        account_items.append({
+        account_item = {
             "name": acc.email,
             "platform": "openai",
             "type": "oauth",
@@ -82,7 +231,10 @@ def upload_to_sub2api(
             "priority": priority,
             "rate_multiplier": 1,
             "auto_pause_on_expired": True,
-        })
+        }
+        if proxy_payload is not None:
+            account_item["proxy_key"] = proxy_payload["proxy_key"]
+        account_items.append(account_item)
 
     if not account_items:
         return False, "所有账号均缺少 access_token，无法上传"
@@ -92,7 +244,7 @@ def upload_to_sub2api(
             "type": "sub2api-data",
             "version": 1,
             "exported_at": exported_at,
-            "proxies": [],
+            "proxies": [proxy_payload] if proxy_payload is not None else [],
             "accounts": account_items,
         },
         "skip_default_group_bind": True,
@@ -138,6 +290,7 @@ def batch_upload_to_sub2api(
     api_key: str,
     concurrency: int = 3,
     priority: int = 50,
+    proxy_id: Optional[int] = None,
 ) -> dict:
     """
     批量上传指定 ID 的账号到 Sub2API 平台
@@ -169,7 +322,14 @@ def batch_upload_to_sub2api(
         if not accounts:
             return results
 
-        success, message = upload_to_sub2api(accounts, api_url, api_key, concurrency, priority)
+        success, message = upload_to_sub2api(
+            accounts,
+            api_url,
+            api_key,
+            concurrency,
+            priority,
+            proxy_id=proxy_id,
+        )
 
         if success:
             for acc in accounts:

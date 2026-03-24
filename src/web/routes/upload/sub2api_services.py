@@ -8,7 +8,11 @@ from pydantic import BaseModel
 
 from ....database import crud
 from ....database.session import get_db
-from ....core.upload.sub2api_upload import test_sub2api_connection, batch_upload_to_sub2api
+from ....core.upload.sub2api_upload import (
+    batch_upload_to_sub2api,
+    fetch_remote_sub2api_proxies,
+    test_sub2api_connection,
+)
 
 router = APIRouter()
 
@@ -55,6 +59,22 @@ class Sub2ApiUploadRequest(BaseModel):
     service_id: Optional[int] = None
     concurrency: int = 3
     priority: int = 50
+    proxy_id: Optional[int] = None
+
+
+class Sub2ApiRemoteProxyResponse(BaseModel):
+    id: int
+    name: str
+    protocol: str
+    host: str
+    port: int
+    username: str = ""
+    status: str
+
+
+class Sub2ApiRemoteProxyListResponse(BaseModel):
+    service: Sub2ApiServiceResponse
+    proxies: List[Sub2ApiRemoteProxyResponse]
 
 
 def _to_response(svc) -> Sub2ApiServiceResponse:
@@ -67,6 +87,35 @@ def _to_response(svc) -> Sub2ApiServiceResponse:
         priority=svc.priority,
         created_at=svc.created_at.isoformat() if svc.created_at else None,
         updated_at=svc.updated_at.isoformat() if svc.updated_at else None,
+    )
+
+
+def _resolve_sub2api_service(service_id: Optional[int] = None):
+    with get_db() as db:
+        if service_id:
+            svc = crud.get_sub2api_service_by_id(db, service_id)
+        else:
+            services = crud.get_sub2api_services(db, enabled=True)
+            svc = services[0] if services else None
+
+    if not svc:
+        raise HTTPException(status_code=400, detail="未找到可用的 Sub2API 服务")
+    return svc
+
+
+def _to_remote_proxy_response(proxy: dict) -> Sub2ApiRemoteProxyResponse:
+    proxy_id = proxy.get("id")
+    if proxy_id is None:
+        raise ValueError("远端 Sub2API 代理缺少 id")
+
+    return Sub2ApiRemoteProxyResponse(
+        id=int(proxy_id),
+        name=str(proxy.get("name") or "").strip() or f"Proxy {proxy_id}",
+        protocol=str(proxy.get("protocol") or "").strip(),
+        host=str(proxy.get("host") or "").strip(),
+        port=int(proxy.get("port") or 0),
+        username=str(proxy.get("username") or "").strip(),
+        status=str(proxy.get("status") or "inactive").strip() or "inactive",
     )
 
 
@@ -93,6 +142,23 @@ async def create_sub2api_service(request: Sub2ApiServiceCreate):
             priority=request.priority,
         )
         return _to_response(svc)
+
+
+@router.get("/remote-proxies", response_model=Sub2ApiRemoteProxyListResponse)
+async def list_remote_sub2api_proxies(service_id: Optional[int] = None):
+    """拉取目标 Sub2API 服务中的远端代理列表"""
+    svc = _resolve_sub2api_service(service_id)
+
+    try:
+        proxies = fetch_remote_sub2api_proxies(svc.api_url, svc.api_key)
+        proxy_items = [_to_remote_proxy_response(proxy) for proxy in proxies]
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    return Sub2ApiRemoteProxyListResponse(
+        service=_to_response(svc),
+        proxies=proxy_items,
+    )
 
 
 @router.get("/{service_id}", response_model=Sub2ApiServiceResponse)
@@ -203,5 +269,6 @@ async def upload_accounts_to_sub2api(request: Sub2ApiUploadRequest):
         api_key,
         concurrency=request.concurrency,
         priority=request.priority,
+        proxy_id=request.proxy_id,
     )
     return results
